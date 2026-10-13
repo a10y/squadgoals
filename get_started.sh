@@ -1,25 +1,18 @@
 #!/usr/bin/env bash
-# Downloads and preprocesses data into ./data
-# Get directory containing this script
+# Installs dependencies and downloads SQuAD and GloVe into ./data
+set -euo pipefail
 
 CODE_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+cd "$CODE_DIR"
 
-export PYTHONPATH=$PYTHONPATH:$CODE_DIR
+uv sync
 
-pip install -r $CODE_DIR/requirements.txt
-
-# download punkt, perluniprops
-python -m nltk.downloader punkt
+# Tokenizer models for nltk.word_tokenize
+uv run python -m nltk.downloader punkt punkt_tab
 
 # SQuAD preprocess is in charge of downloading
 # and formatting the data to be consumed later
-DATA_DIR=data
-mkdir -p $DATA_DIR
-rm -rf $DATA_DIR
-python $CODE_DIR/preprocessing/squad_preprocess.py
+uv run python preprocessing/squad_preprocess.py
 
-# Download distributed word representations
-python $CODE_DIR/preprocessing/dwr.py
-
-# Data processing for TensorFlow
-python $CODE_DIR/qa_data.py --glove_dim 100
+# Download GloVe 840B 300d word vectors (about 2 GB)
+uv run python preprocessing/dwr.py

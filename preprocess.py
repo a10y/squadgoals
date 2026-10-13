@@ -80,30 +80,26 @@ def load_or_create(glove_root_dir, processed_dir, embed_size, id_to_word):
         logging.info("Loading pre-built GloVe npy from {}".format(glove_final_path))
         return np.load(glove_final_path)
     else:
-        logging.info("Parsing GloVe vectors from text format (try to only do this once, it is must slower than npy)")
-        vec_path = pjoin(glove_root_dir, "vec.{}d.txt".format(embed_size))
+        glove_path = pjoin(glove_root_dir, "glove.840B.{}d.txt".format(embed_size))
+        assert_exists(glove_path, "Please run `uv run python preprocessing/dwr.py` from the root of the project.")
+        logging.info("Reading GloVe vectors from {} (only done once)".format(glove_path))
 
-        assert_exists(vec_path, "Please run ./split_vec.sh from the root of the project.")
-        glove_mat = np.loadtxt(vec_path)
-
-        # Word order
-        glove_order = {}
-        tokens_path = pjoin(glove_root_dir, "token.{}d.txt".format(embed_size))
-        assert_exists(tokens_path, "Please run ./split_vec.sh from root of the project.")
-        # Re-arrange based on our vocabulary
-        with gfile.GFile(tokens_path) as glove_tokens:
-            for i, token in enumerate(glove_tokens):
-                # print(token)
-                glove_order[token.strip()] = i
-
-        print("Read {} tokens from {}".format(len(glove_order), tokens_path))
-
-        # We want to create an embedding matrix that is the same size as the vocabulary
-        trimmed_glove = np.zeros((len(id_to_word), embed_size))
-
-        for i, vocab_word in enumerate(id_to_word):
-            if vocab_word in glove_order:
-                trimmed_glove[i] = glove_mat[glove_order[vocab_word]]
+        # We want to create an embedding matrix that is the same size as the vocabulary.
+        # Stream the file and keep only the words in our vocabulary, which is much faster
+        # and uses much less memory than loading all 2.2M vectors.
+        word_to_id = {word: i for i, word in enumerate(id_to_word)}
+        trimmed_glove = np.zeros((len(id_to_word), embed_size), dtype=np.float32)
+        found = 0
+        with open(glove_path, encoding="utf8") as glove_file:
+            for line in tqdm(glove_file):
+                parts = line.rstrip().split(" ")
+                # A few GloVe tokens contain spaces, so the word is everything before the vector
+                word = " ".join(parts[:-embed_size])
+                i = word_to_id.get(word)
+                if i is not None:
+                    trimmed_glove[i] = np.asarray(parts[-embed_size:], dtype=np.float32)
+                    found += 1
+        logging.info("Found GloVe vectors for {} of {} vocabulary words".format(found, len(id_to_word)))
 
         logging.info("Saving GloVe vectors to compact file {}".format(glove_final_path))
         np.save(glove_final_path, trimmed_glove)
@@ -127,6 +123,8 @@ def tokens_to_ids(source_file, word_to_id, max_len=None, useindexes=None):
     sequences = []
     lengths = []
     indexes = []
+    if useindexes is not None:
+        useindexes = set(useindexes)
     logging.info("Preprocessing {} into an unrolled np.array".format(source_file))
     with gfile.GFile(source_file, "r") as data_file:
         for i, line in enumerate(tqdm(data_file.readlines())):
@@ -178,11 +176,13 @@ def build_dataset(prefix, id_to_word, word_to_id, glove_vectors, squad_root):
     context, ind, context_lens = tokens_to_ids(context_path, word_to_id, max_len=context_max_len)
     question, _, question_lens = tokens_to_ids(question_path, word_to_id, useindexes=ind)
     answer = np.zeros(context.shape[:2], dtype='int32')
+    # Map from line number in the source files to row in the processed arrays
+    shifted = {line: row for row, line in enumerate(ind)}
     with gfile.GFile(span_path, "r") as span_file:
         for i, line in enumerate(span_file):
-            if i in ind:
+            if i in shifted:
                 # Find actual position
-                shifted_index = ind.index(i)
+                shifted_index = shifted[i]
                 start, end = line.split()
                 start, end = int(start), int(end)
                 answer[shifted_index, start:end + 1] = 1
