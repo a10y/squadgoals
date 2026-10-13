@@ -3,7 +3,7 @@
 if [[ $(uname -a) =~ "Darwin" ]]; then
     PYTHON=python
 else
-    PYTHON=python3.5
+    PYTHON=python3
 fi
 
 NOW="$(date +%F-%H_%M_%S)"

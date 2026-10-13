@@ -10,7 +10,7 @@ from pprint import pprint
 
 import numpy as np
 import tensorflow as tf
-# from tensorflow.contrib.rnn import DropoutWrapper, BasicLSTMCell, GRUCell, MultiRNNCell, RNNCell
+from absl import app, flags
 
 from models import MatchLSTMModel
 from utils import minibatch_index_iterator, Progress
@@ -24,27 +24,27 @@ from utils import minibatch_index_iterator, Progress
 """
 Configuration options:
 """
-tf.flags.DEFINE_integer('hidden_size', 150, "Size of hidden states for encoder")
-tf.flags.DEFINE_integer('batch_size', 30, 'size of mini-batches')
-tf.flags.DEFINE_integer('embed_dim', 300, 'embedding dimension')
-tf.flags.DEFINE_integer('epochs', 10, 'number of epochs for training')
-tf.flags.DEFINE_integer('layers', 2, 'number of hidden layers')
+flags.DEFINE_integer('hidden_size', 150, "Size of hidden states for encoder")
+flags.DEFINE_integer('batch_size', 30, 'size of mini-batches')
+flags.DEFINE_integer('embed_dim', 300, 'embedding dimension')
+flags.DEFINE_integer('epochs', 10, 'number of epochs for training')
+flags.DEFINE_integer('layers', 2, 'number of hidden layers')
 
-tf.flags.DEFINE_string('cell_type', 'lstm', "Cell type for RNN")
-tf.flags.DEFINE_float('lr', 0.01, 'learning rate')
+flags.DEFINE_string('cell_type', 'lstm', "Cell type for RNN")
+flags.DEFINE_float('lr', 0.01, 'learning rate')
 
-tf.flags.DEFINE_integer('subset', 0, 'If > 0, only trains on a subset of the train data of given size')
+flags.DEFINE_integer('subset', 0, 'If > 0, only trains on a subset of the train data of given size')
 
-tf.flags.DEFINE_float('keep_prob', 0.6, 'Keep probability for dropout.')
+flags.DEFINE_float('keep_prob', 0.6, 'Keep probability for dropout.')
 
-tf.flags.DEFINE_string('embed_path', 'data/squad/glove.squad.300d.npy', "Path to a .npy file holding the GloVe vectors")
-tf.flags.DEFINE_string('train_path', 'data/squad/train.npz', "Path to training data as an .npz file")
-tf.flags.DEFINE_string('val_path', 'data/squad/val.npz', "Path to validation data as an .npz file")
-tf.flags.DEFINE_string('save_dir', 'save', 'directory to save model checkpoints after each epoch')
+flags.DEFINE_string('embed_path', 'data/squad/glove.squad.300d.npy', "Path to a .npy file holding the GloVe vectors")
+flags.DEFINE_string('train_path', 'data/squad/train.npz', "Path to training data as an .npz file")
+flags.DEFINE_string('val_path', 'data/squad/val.npz', "Path to validation data as an .npz file")
+flags.DEFINE_string('save_dir', 'save', 'directory to save model checkpoints after each epoch')
 
-tf.flags.DEFINE_boolean('resume', False, 'Resume from latest checkpoint in save_dir when flags is passed. Default is not to')
-tf.flags.DEFINE_boolean('save', True, 'Checkpoint the model after each epoch.')
-tf.flags.DEFINE_boolean('valid', True, 'Perform validation periodically.')
+flags.DEFINE_boolean('resume', False, 'Resume from latest checkpoint in save_dir when flags is passed. Default is not to')
+flags.DEFINE_boolean('save', True, 'Checkpoint the model after each epoch.')
+flags.DEFINE_boolean('valid', True, 'Perform validation periodically.')
 
 """
 Utilities
@@ -77,119 +77,111 @@ def minibatch_indexes(maxidx, batch_size):
 
 def main(_):
     print("Starting")
-    with tf.Session().as_default() as sess:
-        # sess = tf_debug.LocalCLIDebugWrapperSession(sess)   # DEbugging
+    # Train the model
+    config = flags.FLAGS
+    print("Configuration:")
+    pprint(config.flag_values_dict(), indent=4)
 
-        # Train the model
-        config = tf.flags.FLAGS
-        print("Configuration:")
-        pprint(tf.flags.FLAGS.__dict__['__flags'], indent=4)
+    tic = time.time()
+    model = MatchLSTMModel(config)
+    toc = time.time()
+    print("Took {:.2f}s to build model.".format(toc - tic))
 
-        # Time building the graph
-        tic = time.time()
-        model = MatchLSTMModel(config).build_graph()
-        toc = time.time()
-        print("Took {:.2f}s to build graph.".format(toc - tic))
+    questions, contexts, answers, q_lens, c_lens = load_data(config.train_path)
+    num_examples = config.subset if config.subset > 0 else questions.shape[0]
 
-        sess.run(tf.global_variables_initializer())
-        print("Initialized globals.")
+    print("Parameters:")
+    pprint(list(v.path for v in model.net.trainable_variables))
+    total_params = sum(int(np.prod(v.shape)) for v in model.net.trainable_variables)
+    print("Total params: {}".format(total_params))
 
-        print("Parameters:")
-        pprint(list(kv.name for kv in tf.trainable_variables()))
-        questions, contexts, answers, q_lens, c_lens = load_data(config.train_path)
+    # Setup saving
+    ckpt = model.checkpoint()
+    manager = tf.train.CheckpointManager(ckpt, config.save_dir, max_to_keep=None)  # Cleanup manually
+    best_path = os.path.join(config.save_dir, "model_best")
+    tf.io.gfile.makedirs(config.save_dir)
 
-        num_examples = config.subset if config.subset > 0 else questions.shape[0]
-        total_params = sum(v.get_shape().num_elements() for v in tf.trainable_variables())
-        print("Total params: {}".format(total_params))
+    # Resume training
+    if config.resume:
+        latest = tf.train.latest_checkpoint(config.save_dir)
+        print("Restoring from {}  ...".format(latest))
+        ckpt.restore(latest)
 
+    val_data = load_data(config.val_path) if config.valid else None
 
-        # Setup saving
-        saver = tf.train.Saver(max_to_keep=0)  # Don't delete checkpoint files, cleanup manually
-        save_path = os.path.join(config.save_dir, "model")
-        best_path = os.path.join(config.save_dir, "model_best")
-        if not tf.gfile.Exists(config.save_dir):
-            tf.gfile.MakeDirs(config.save_dir)
+    # Perform training pass
+    all_losses = []
+    epoch_losses = []
+    validation_losses = []
+    print("Begin training!")
 
-        # If we want to restore then try it
-        # Resume training
-        if tf.flags.FLAGS.resume:
-            latest = tf.train.latest_checkpoint(config.save_dir)
-            print("Restoring from {}  ...".format(latest))
-            saver.restore(sess, latest)
+    for epoch in range(config.epochs):
+        num_batches = math.ceil(num_examples / config.batch_size)
+        losses = []
 
-        # Perform training pass
-        all_losses = []
-        epoch_losses = []
-        validation_losses = []
-        print("Begin training!")
+        # Halve the learning rate after each epoch
+        lr = config.lr * (0.5)**epoch
 
-        for epoch in range(config.epochs):
-            num_batches = math.ceil(num_examples / config.batch_size)
-            losses = []
+        # Create progress bar over this
+        bar = Progress('Epoch {} of {}'.format(epoch + 1, config.epochs), steps=num_batches, width=20, sameline=False)
+        for batch, idxs in enumerate(minibatch_index_iterator(num_examples, config.batch_size)):
+            # Read batch_size indexes for constructing training batch
+            qs = questions[idxs]
+            cs = contexts[idxs]
+            ans = answers[idxs]
+            q_ls = q_lens[idxs]
+            c_ls = c_lens[idxs]
 
-            # Halve the learning rate after each epoch
-            lr = config.lr * (0.5)**epoch
+            # Perform train step
+            loss, norm = model.train(qs, cs, ans, q_ls, c_ls, norms=True, lr=lr)
+            losses.append(loss)
+            all_losses.append(loss)
 
-            # Create progress bar over this
-            bar = Progress('Epoch {} of {}'.format(epoch + 1, config.epochs), steps=num_batches, width=20, sameline=False)
-            for batch, idxs in enumerate(minibatch_index_iterator(num_examples, config.batch_size)):
-                # Read batch_size indexes for constructing training batch
-                qs = questions[idxs]
-                cs = contexts[idxs]
-                ans = answers[idxs]
-                q_ls = q_lens[idxs]
-                c_ls = c_lens[idxs]
+            # Calculate some stats to print
+            bar.tick(loss=loss, avg10=np.average(losses[-10:]), hi=max(losses), lo=min(losses), norm=float(norm), lr=lr)
 
-                # Perform train step
-                loss, norm = model.train(qs, cs, ans, q_ls, c_ls, norms=True, lr=lr)
-                losses.append(loss)
-                all_losses.append(loss)
+            if config.save and (batch % 100 == 0):
+                print("Checkpointing...")
+                manager.save(checkpoint_number=epoch)
+                print("Done")
 
-                # Calculate some stats to print
-                bar.tick(loss=loss, avg10=np.average(losses[-10:]), hi=max(losses), lo=min(losses), norm=float(norm), lr=lr)
-
-                if tf.flags.FLAGS.save and (batch % 100 == 0):
-                    print("Checkpointing...")
-                    saver.save(sess, save_path, global_step=epoch)
-                    print("Done")
-
-                # Calculate validation
-                if config.valid and batch % 500 == 0 and batch > 0:
-                    # Perform validation here
-                    val_loss = validation(sess, config, model)
-                    if len(validation_losses) == 0 or val_loss < np.min(validation_losses):
-                        # Save best model
-                        print("===> New best validation! Saving to {}".format(best_path))
-                        saver.save(sess, best_path)
-
-                    validation_losses.append(val_loss)
-                    # Write the losses out to a file for later
-                    print("Saving statistics...")
-                    np.savez("statistics.npz", epoch_losses=epoch_losses, validation=validation_losses)
-
-
-            if config.valid:
-                val_loss = validation(sess, config, model)
-                validation_losses.append(val_loss)
+            # Calculate validation
+            if config.valid and batch % 500 == 0 and batch > 0:
+                # Perform validation here
+                val_loss = validation(model, val_data)
                 if len(validation_losses) == 0 or val_loss < np.min(validation_losses):
                     # Save best model
                     print("===> New best validation! Saving to {}".format(best_path))
-                    saver.save(sess, best_path)
+                    ckpt.write(best_path)
+
+                validation_losses.append(val_loss)
+                # Write the losses out to a file for later
+                print("Saving statistics...")
+                np.savez("statistics.npz", epoch_losses=epoch_losses, validation=validation_losses)
 
 
-            avg_loss = np.average(losses)
-            epoch_losses.append(avg_loss)
-            print("\n--- Epoch {} Average Train Loss: {:.7f}".format(epoch + 1, avg_loss))
+        if config.valid:
+            val_loss = validation(model, val_data)
+            if len(validation_losses) == 0 or val_loss < np.min(validation_losses):
+                # Save best model
+                print("===> New best validation! Saving to {}".format(best_path))
+                ckpt.write(best_path)
+            validation_losses.append(val_loss)
 
-        # Write the losses out to a file for later
-        if config.save:
-            print("Saving statistics...")
-            np.savez("statistics.npz", epoch_losses=epoch_losses, validation=validation_losses)
+
+        avg_loss = np.average(losses)
+        epoch_losses.append(avg_loss)
+        print("\n--- Epoch {} Average Train Loss: {:.7f}".format(epoch + 1, avg_loss))
+
+    # Write the losses out to a file for later
+    if config.save:
+        print("Saving statistics...")
+        np.savez("statistics.npz", epoch_losses=epoch_losses, validation=validation_losses)
 
 
-def validation(sess, config, model):
+def validation(model, val_data):
     print("Performing validation...")
-    val_qs, val_cs, val_as, val_q_lens, val_c_lens = load_data(config.val_path)
+    val_qs, val_cs, val_as, val_q_lens, val_c_lens = val_data
     num_examples = val_qs.shape[0]
     BATCH_SIZE = 30
     losses = []
@@ -207,4 +199,4 @@ def validation(sess, config, model):
 
 
 if __name__ == '__main__':
-    tf.app.run(main=main)
+    app.run(main)
