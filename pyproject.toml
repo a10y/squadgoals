@@ -1,0 +1,28 @@
+[project]
+name = "squadgoals"
+version = "0.1.0"
+description = "Match-LSTM with Answer Pointer for SQuAD"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    # On Linux, the [and-cuda] extra installs the CUDA libraries for GPU training.
+    "tensorflow[and-cuda]==2.21.0 ; sys_platform == 'linux'",
+    "tensorflow==2.21.0 ; sys_platform != 'linux'",
+    "absl-py>=2.1",
+    "numpy>=1.26",
+    "nltk>=3.8",
+    "six>=1.16",
+    "tqdm>=4.66",
+    "matplotlib>=3.8",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.uv]
+# This repo is a set of scripts, not an installable package.
+package = false
+environments = ["sys_platform == 'linux'", "sys_platform == 'darwin'"]
+
+[tool.pytest.ini_options]
+testpaths = ["test_model.py"]

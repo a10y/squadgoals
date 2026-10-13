@@ -91,7 +91,7 @@ class Progress(object):
         pairs = []
         for k, v in kwargs.items():
             # Truncate floats
-            if isinstance(v, float) or isinstance(v, np.float) or isinstance(v, np.float32) or isinstance(v, np.float64):
+            if isinstance(v, (float, np.floating)):
                 v = "{:.4f}".format(v)
             pairs.append("{}={}".format(k, v))
         extra_info = '   '.join(pairs)

@@ -1,6 +1,6 @@
-FROM tensorflow/tensorflow:1.0.0-gpu-py3
-RUN pip install joblib
-RUN pip install nltk
-RUN pip install tqdm
-RUN pip install pyprind
-RUN python -m nltk.downloader --dir=/usr/local/share/nltk_data perluniprops punkt
+FROM tensorflow/tensorflow:2.21.0-gpu
+COPY --from=ghcr.io/astral-sh/uv:0.11 /uv /uvx /bin/
+WORKDIR /app
+COPY pyproject.toml uv.lock .python-version ./
+RUN uv sync --frozen
+RUN uv run python -m nltk.downloader --dir=/usr/local/share/nltk_data perluniprops punkt punkt_tab

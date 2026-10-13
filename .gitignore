@@ -14,3 +14,6 @@ tags
 *.npy
 *.npz
 *.log
+
+# uv
+.venv/

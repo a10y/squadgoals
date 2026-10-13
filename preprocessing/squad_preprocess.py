@@ -48,8 +48,12 @@ def maybe_download(url, filename, prefix, num_bytes=None):
     if not os.path.exists(os.path.join(prefix, filename)):
         try:
             print("Downloading file {}...".format(url + filename))
+            # Download to a temporary name, so a cut-off download is not mistaken for a complete file
+            partial = os.path.join(prefix, filename + ".part")
             with tqdm(unit='B', unit_scale=True, miniters=1, desc=filename) as t:
-                local_filename, _ = urlretrieve(url + filename, os.path.join(prefix,filename), reporthook=reporthook(t))
+                local_filename, _ = urlretrieve(url + filename, partial, reporthook=reporthook(t))
+            os.rename(partial, os.path.join(prefix, filename))
+            local_filename = os.path.join(prefix, filename)
         except AttributeError as e:
             print("An error occurred when downloading the file! Please get the dataset using a browser.")
             raise e
